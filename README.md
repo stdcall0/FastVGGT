@@ -42,7 +42,12 @@ pip install -r requirements.txt
 
 Next, prepare the ScanNet dataset: http://www.scan-net.org/ScanNet/
 
-Then, configure the dataset path and VGGT checkpoint path. For example:
+Then, download the VGGT checkpoint (we use the checkpoint link provided in https://github.com/facebookresearch/vggt/tree/evaluation/evaluation):
+```bash
+wget https://huggingface.co/facebook/VGGT_tracker_fixed/resolve/main/model_tracker_fixed_e20.pt
+```
+
+Finally, configure the dataset path and VGGT checkpoint path. For example:
 ```bash
     parser.add_argument(
         "--data_dir", type=Path, default="/data/scannetv2/process_scannet"
