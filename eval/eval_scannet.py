@@ -2,6 +2,14 @@ import argparse
 from pathlib import Path
 import numpy as np
 import torch
+import os
+import sys
+
+# Ensure project root is in sys.path for absolute imports like `vggt.*`
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from vggt.models.vggt import VGGT
 from vggt.utils.eval_utils import (
     load_poses,
