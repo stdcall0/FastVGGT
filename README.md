@@ -163,4 +163,4 @@ If you find this project helpful, please consider citing the following paper:
 ```
 
 ## 🔍 Explore, Capture, Lead in 3D
-<img src="assets/gzh.png" alt="Maclab Logo" width="300" style="margin-right: 40px;">
+<img src="assets/gzh.jpg" alt="Maclab Logo" width="300" style="margin-right: 40px;">
