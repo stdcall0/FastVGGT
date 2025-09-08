@@ -66,6 +66,31 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
             else None
         )
 
+    def update_patch_dimensions(self, patch_width: int, patch_height: int):
+        """
+        Update patch dimensions for all attention layers in the model
+
+        Args:
+            patch_width: Patch width (typically 37)
+            patch_height: Patch height (typically 28)
+        """
+
+        def update_attention_in_module(module):
+            for name, child in module.named_children():
+                # Recursively update submodules
+                update_attention_in_module(child)
+                # If it is an attention layer, update its patch dimensions
+                if hasattr(child, "patch_width") and hasattr(child, "patch_height"):
+                    child.patch_width = patch_width
+                    child.patch_height = patch_height
+
+        # Update all attention layers in the aggregator
+        update_attention_in_module(self.aggregator)
+
+        # print(
+        #     f"🔧 Updated model attention layer patch dimensions: {patch_width}x{patch_height}"
+        # )
+
     def forward(
         self,
         images: torch.Tensor,

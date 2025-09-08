@@ -18,6 +18,7 @@
 
 
 ## 📰 News
+- [Sep 8, 2025] Added custom dataset evaluation.
 - [Sep 3, 2025] Paper release.
 - [Sep 2, 2025] Code release.
 
@@ -69,7 +70,7 @@ Finally, configure the dataset path and VGGT checkpoint path. For example:
 
 Note: A large number of input_frames may significantly slow down saving the visualization results. Please try using a smaller number first.
 ```bash
-python eval_scannet.py --input_frame 30 --vis_attn_map
+python eval/eval_scannet.py --input_frame 30 --vis_attn_map --merging 0
 ```
 
 We observe that many token-level attention maps are highly similar in each block, motivating our optimization of the Global Attention module.
@@ -79,29 +80,84 @@ We observe that many token-level attention maps are highly similar in each block
 
 
 ## 🏀 Evaluation
+### Custom Dataset
+Please organize the data according to the following directory:
+```
+<data_path>/
+├── images/       
+│   ├── 000000.jpg
+│   ├── 000001.jpg
+│   └── ...
+├── pose/                # Optional: Camera poses
+│   ├── 000000.txt 
+│   ├── 000001.txt
+│   └── ...
+└── gt_ply/              # Optional: GT point cloud
+    └── scene_xxx.ply   
+```
+- Required: `images/`
+- Additionally required when `--enable_evaluation` is enabled: `pose/` and `gt_ply/`
+
+Inference only:
+
+```bash
+python eval/eval_custom.py \
+  --data_path /path/to/your_dataset \
+  --output_path ./eval_results_custom \
+  --plot
+```
+
+Inference + Evaluation (requires `pose/` and `gt_ply/`):
+
+```bash
+python eval/eval_custom.py \
+  --data_path /path/to/your_dataset \
+  --enable_evaluation \
+  --output_path ./eval_results_custom \
+  --plot
+```
+
+### ScanNet
 Evaluate FastVGGT on the ScanNet dataset with 1,000 input images. The **--merging** parameter specifies the block index at which the merging strategy is applied:
 
 ```bash
-python eval_scannet.py --input_frame 1000 --merging 0
+python eval/eval_scannet.py --input_frame 1000 --merging 0
 ```
 
 Evaluate Baseline VGGT on the ScanNet dataset with 1,000 input images:
 ```bash
-python eval_scannet.py --input_frame 1000
+python eval/eval_scannet.py --input_frame 1000
 ```
 <img src="assets/vs.png" alt="Autolab Logo" width="">
 
+### 7 Scenes & NRGBD
+Evaluate across two datasets, sampling keyframes every 10 frames:
+```bash
+python eval/eval_7andN.py --kf 10
+```
 
 ## 🍺 Acknowledgements
 
-- Thanks to these great repositories: [VGGT](https://github.com/facebookresearch/vggt), [Dust3r](https://github.com/naver/dust3r),  [Fast3R](https://github.com/facebookresearch/fast3r), [CUT3R](https://github.com/CUT3R/CUT3R), [MV-DUSt3R+](https://github.com/facebookresearch/mvdust3r), [StreamVGGT](https://github.com/wzzheng/StreamVGGT), [VGGT-Long](https://github.com/DengKaiCQ/VGGT-Long) and many other inspiring works in the community.
+- Thanks to these great repositories: [VGGT](https://github.com/facebookresearch/vggt), [Dust3r](https://github.com/naver/dust3r),  [Fast3R](https://github.com/facebookresearch/fast3r), [CUT3R](https://github.com/CUT3R/CUT3R), [MV-DUSt3R+](https://github.com/facebookresearch/mvdust3r), [StreamVGGT](https://github.com/wzzheng/StreamVGGT), [VGGT-Long](https://github.com/DengKaiCQ/VGGT-Long), [ToMeSD](https://github.com/dbolya/tomesd) and many other inspiring works in the community.
 
 - Special thanks to [Jianyuan Wang](https://jytime.github.io/) for his valuable discussions and suggestions on this work.
 
-## ✍️ Checklist
+<!-- ## ✍️ Checklist
 
-- [ ] Release the evaluation code on 7 Scenes / NRGBD
+- [ ] Release the evaluation code on 7 Scenes / NRGBD -->
 
 
 ## ⚖️ License
 See the [LICENSE](./LICENSE.txt) file for details about the license under which this code is made available.
+
+## Citation
+
+If you find this project helpful, please consider citing the following paper:
+```
+@article{shen2025fastvggt,
+  title={FastVGGT: Training-Free Acceleration of Visual Geometry Transformer},
+  author={Shen, You and Zhang, Zhipeng and Qu, Yansong and Cao, Liujuan},
+  journal={arXiv preprint arXiv:2509.02560},
+  year={2025}
+}
+```

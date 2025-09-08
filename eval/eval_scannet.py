@@ -138,13 +138,18 @@ if __name__ == "__main__":
 
             frame_ids = selected_frame_ids
             images_array = np.stack(images)
-            vgg_input = get_vgg_input_imgs(images_array)
+            vgg_input, patch_width, patch_height = get_vgg_input_imgs(images_array)
+            print(f"Patch dimensions: {patch_width}x{patch_height}")
+
+            # Update model attention layers with dynamic patch dimensions
+            model.update_patch_dimensions(patch_width, patch_height)
 
             # Inference + Reconstruction
             (
                 extrinsic_np,
                 intrinsic_np,
                 all_world_points,
+                all_point_colors,
                 all_cam_to_world_mat,
                 inference_time_ms,
             ) = infer_vggt_and_reconstruct(

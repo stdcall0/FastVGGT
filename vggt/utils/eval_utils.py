@@ -1,8 +1,14 @@
+from collections import deque
+from PIL import Image
+import cv2
 import io
+import random
 import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from copy import deepcopy
+import matplotlib.pyplot as plt
+import evo.tools.plot as plot
 import evo.main_ape as main_ape
 import evo.main_rpe as main_rpe
 import matplotlib.pyplot as plt
@@ -12,11 +18,11 @@ from evo.core.metrics import PoseRelation, Unit
 from evo.core.trajectory import PoseTrajectory3D
 from scipy.linalg import svd
 import open3d as o3d  # for point cloud processing and Chamfer Distance computation
-from PIL import Image
+
 from scipy.spatial.transform import Rotation
 from torchvision import transforms as TF
-import evo.tools.plot as plot
-import cv2
+
+
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
@@ -389,6 +395,9 @@ def load_poses(path):
 def get_vgg_input_imgs(images: np.ndarray):
     to_tensor = TF.ToTensor()
     vgg_input_images = []
+    final_width = None
+    final_height = None
+
     for image in images:
         img = Image.fromarray(image, mode="RGB")
         width, height = img.size
@@ -402,17 +411,27 @@ def get_vgg_input_imgs(images: np.ndarray):
         if new_height > 518:
             start_y = (new_height - 518) // 2
             img = img[:, start_y : start_y + 518, :]
+            final_height = 518
+        else:
+            final_height = new_height
 
+        final_width = new_width
         vgg_input_images.append(img)
+
     vgg_input_images = torch.stack(vgg_input_images)
-    return vgg_input_images
+
+    # Calculate the patch dimensions (divided by 14 for patch size)
+    patch_width = final_width // 14  # 518 // 14 = 37
+    patch_height = final_height // 14  # computed dynamically, typically 28
+
+    return vgg_input_images, patch_width, patch_height
 
 
 def get_sorted_image_paths(images_dir):
     image_paths = []
     for ext in ["*.jpg", "*.png", "*.jpeg"]:
         image_paths.extend(sorted(images_dir.glob(ext)))
-    image_paths.sort(key=lambda x: int(x.stem))
+    # image_paths.sort(key=lambda x: int(x.stem))
     return image_paths
 
 
@@ -578,7 +597,14 @@ def infer_vggt_and_reconstruct(
     dtype: torch.dtype,
     depth_conf_thresh: float,
     image_paths: list = None,
-) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray], List[np.ndarray], float]:
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    List[np.ndarray],
+    List[np.ndarray],
+    List[np.ndarray],
+    float,
+]:
     torch.cuda.synchronize()
     start = time.time()
     with torch.cuda.amp.autocast(dtype=dtype):
@@ -607,12 +633,26 @@ def infer_vggt_and_reconstruct(
         depth_np, extrinsic_np, intrinsic_np
     )
     all_points: List[np.ndarray] = []
+    all_colors: List[np.ndarray] = []
+
+    # Prepare RGB images aligned with vgg_input for coloring point clouds (0-255, uint8)
+    vgg_np = vgg_input.detach().float().cpu().numpy()  # [S, 3, H, W] in [0,1]
+
     for frame_idx in range(world_points.shape[0]):
         points = world_points[frame_idx].reshape(-1, 3)
         valid_mask = ~np.isnan(points).any(axis=1) & ~np.isinf(points).any(axis=1)
         valid_points = points[valid_mask]
         if len(valid_points) > 0:
             all_points.append(valid_points)
+
+            # Generate corresponding colors
+            img_chw = vgg_np[frame_idx]  # [3, H, W]
+            img_hwc = (
+                (np.transpose(img_chw, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
+            )  # [H, W, 3] uint8
+            rgb_flat = img_hwc.reshape(-1, 3)
+            valid_colors = rgb_flat[valid_mask]
+            all_colors.append(valid_colors)
 
     camera_poses = to_homogeneous(extrinsic_np)
     all_cam_to_world_mat = list(camera_poses)
@@ -621,6 +661,7 @@ def infer_vggt_and_reconstruct(
         extrinsic_np,
         intrinsic_np,
         all_points,
+        all_colors,
         all_cam_to_world_mat,
         inference_time_ms,
     )

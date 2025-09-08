@@ -37,12 +37,16 @@ class Attention(nn.Module):
         fused_attn: bool = True,
         rope=None,
         global_merging=None,
+        patch_width: int = 37,
+        patch_height: int = 28,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
+        self.patch_width = patch_width
+        self.patch_height = patch_height
         self.fused_attn = fused_attn
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -102,32 +106,40 @@ class Attention(nn.Module):
 
             attn_map = torch.cat(attn_maps, dim=-2)
             attn = attn_map[0].mean(0)
+            frame_token_num = self.patch_height * self.patch_width + 5
             for target_token_idx in [
                 0,
-                1041,
-                10410,
+                self.patch_height * self.patch_width,
+                self.patch_height * self.patch_width * 10,
             ]:  # Iterate through each image's target_token
                 for image_idx in range(
                     len(current_images)
                 ):  # Corresponding to which image to visualize
                     target_attn = attn[
-                        target_token_idx, image_idx * 1041 : (image_idx + 1) * 1041
+                        target_token_idx,
+                        image_idx * frame_token_num : (image_idx + 1) * frame_token_num,
                     ]
-                    target_attn_map = target_attn[5:].reshape(28, 37)
-                    target_attn_map = F.interpolate(
-                        target_attn_map.unsqueeze(0).unsqueeze(0),  # (1,1,28,37)
-                        size=(968, 1296),  # Original image size
-                        mode="bilinear",
+                    target_attn_map = target_attn[5:].reshape(
+                        self.patch_height, self.patch_width
                     )
-                    target_attn_map = target_attn_map.squeeze()  # (392,518)
-
-                    # # 1. Read original image
-                    image_path = current_images[image_idx]  # (3, H, W)
+                    # 1) Read original image to get true size (H, W)
+                    image_path = current_images[image_idx]
                     p = Path(image_path)
                     parts = p.parts
                     scene_name = parts[-4]
 
                     image = Image.open(image_path).convert("RGB")
+                    img_width, img_height = image.size  # PIL size: (W, H)
+
+                    # Upsample attention map to the original image size
+                    target_attn_map = F.interpolate(
+                        target_attn_map.unsqueeze(0).unsqueeze(0),  # (1,1,h,w)
+                        size=(img_height, img_width),
+                        mode="bilinear",
+                    )
+                    target_attn_map = target_attn_map.squeeze()
+
+                    # Convert image to numpy for blending
                     img_np = np.array(image) / 255.0
 
                     # 2. Normalize attention map
@@ -158,7 +170,15 @@ class Attention(nn.Module):
             r = int(x.shape[1] * merge_ratio)
 
             m, u = token_merge_bipartite2d(
-                x, 37, 28, 2, 2, r, False, generator, enable_protection=True
+                x,
+                self.patch_width,
+                self.patch_height,
+                2,
+                2,
+                r,
+                False,
+                generator,
+                enable_protection=True,
             )
 
             m_a, u_a = (m, u)

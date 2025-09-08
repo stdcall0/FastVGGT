@@ -24,7 +24,7 @@ def get_args_parser():
     parser.add_argument(
         "--ckpt_path",
         type=str,
-        default="/home/sy/code/vggt_0625/ckpt/model_tracker_fixed_e20.pt",
+        default="/home/sy/code/FastVGGT/ckpt/model_tracker_fixed_e20.pt",
         help="ckpt name",
     )
     parser.add_argument("--device", type=str, default="cuda:0", help="device")
@@ -35,7 +35,7 @@ def get_args_parser():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/sy/code/vggt_0625/eval_results",
+        default="/home/sy/code/FastVGGT/eval_results",
         help="value for outdir",
     )
     parser.add_argument("--size", type=int, default=518)
@@ -93,14 +93,14 @@ def main(args):
     # Load VGGT model
     model = VGGT(merging=args.merging, enable_point=True)
     ckpt = torch.load(args.ckpt_path, map_location="cpu")
+
+    # ✅ Fix: load pre-trained weights
+    model.load_state_dict(
+        ckpt, strict=False
+    )  # Use strict=False due to enable_point=True difference
+
     model = model.cuda().eval()
     model = model.to(torch.bfloat16)
-
-    # model = VGGT(merging=args.merging)
-    # ckpt = torch.load(args.weights, map_location=device)
-    # model.load_state_dict(ckpt, strict=True)
-    # model.eval()
-    # model = model.to("cuda")
 
     del ckpt
     os.makedirs(osp.join(args.output_dir, f"{args.kf}"), exist_ok=True)
@@ -180,9 +180,9 @@ def main(args):
                         torch.cuda.synchronize()
                         end = time.time()
                         inference_time_ms = (end - start) * 1000
-                        print(f"推理耗时: {inference_time_ms:.2f}ms")
+                        print(f"Inference time: {inference_time_ms:.2f}ms")
 
-                    # 将模型输出按视角维度包装为列表形式，便于后续与 batch 对齐
+                    # Wrap model outputs per-view to align with batch later
                     predictions = preds
                     views = batch  # list[dict]
                     if "pose_enc" in predictions:
@@ -190,7 +190,9 @@ def main(args):
                     elif "world_points" in predictions:
                         B, S = predictions["world_points"].shape[:2]
                     else:
-                        raise KeyError("predictions 缺少用于推断序列长度的关键字段")
+                        raise KeyError(
+                            "predictions is missing a key to infer sequence length"
+                        )
 
                     ress = []
                     for s in range(S):
@@ -227,28 +229,6 @@ def main(args):
 
                     preds = ress
 
-                    if args.use_proj:
-                        pose_enc = torch.stack(
-                            [preds[s]["camera_pose"] for s in range(len(preds))],
-                            dim=1,
-                        )
-                        depth_map = torch.stack(
-                            [preds[s]["depth"] for s in range(len(preds))],
-                            dim=1,
-                        )
-                        depth_conf = torch.stack(
-                            [preds[s]["depth_conf"] for s in range(len(preds))],
-                            dim=1,
-                        )
-                        extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                            pose_enc, batch[0]["img"].shape[-2:]
-                        )
-
-                        point_map_by_unprojection = unproject_depth_map_to_point_map(
-                            depth_map.squeeze(0),
-                            extrinsic.squeeze(0),
-                            intrinsic.squeeze(0),
-                        )
                     valid_length = len(preds) // args.revisit
                     if args.revisit > 1:
                         preds = preds[-valid_length:]
@@ -274,12 +254,8 @@ def main(args):
                         image = view["img"].permute(0, 2, 3, 1).cpu().numpy()[0]
                         mask = view["valid_mask"].cpu().numpy()[0]
 
-                        if args.use_proj:
-                            pts = point_map_by_unprojection[j]
-                            conf = depth_conf[0, j].cpu().data.numpy()
-                        else:
-                            pts = pred_pts[j].cpu().numpy()[0]
-                            conf = preds[j]["conf"].cpu().data.numpy()[0]
+                        pts = pred_pts[j].cpu().numpy()[0]
+                        conf = preds[j]["conf"].cpu().data.numpy()[0]
 
                         # mask = mask & (conf > 1.8)
 
@@ -307,7 +283,7 @@ def main(args):
                 masks_all = np.concatenate(masks_all, axis=0)
 
                 scene_id = view["label"][0].rsplit("/", 1)[0]
-                # 记录本场景的推理时间
+                # Record average inference time per scene
                 try:
                     scene_infer_times[scene_id].append(float(inference_time_ms))
                 except Exception:
@@ -331,12 +307,12 @@ def main(args):
                 pts_gt_all_masked = pts_gt_all_masked[mask_gt]
                 images_all_masked = images_all_masked[mask]
 
-                # 转为点云形状 (N, 3) 后再进行采样
+                # Reshape to point cloud (N, 3) before sampling
                 pts_all_masked = pts_all_masked.reshape(-1, 3)
                 pts_gt_all_masked = pts_gt_all_masked.reshape(-1, 3)
                 images_all_masked = images_all_masked.reshape(-1, 3)
 
-                # 如果点云数量超过阈值，按点级别采样
+                # If number of points exceeds threshold, sample by points
                 if pts_all_masked.shape[0] > 999999:
                     sample_indices = np.random.choice(
                         pts_all_masked.shape[0], 999999, replace=False
@@ -344,7 +320,7 @@ def main(args):
                     pts_all_masked = pts_all_masked[sample_indices]
                     images_all_masked = images_all_masked[sample_indices]
 
-                # 对gt点云也进行相同的采样处理
+                # Apply the same sampling to GT point cloud
                 if pts_gt_all_masked.shape[0] > 999999:
                     sample_indices_gt = np.random.choice(
                         pts_gt_all_masked.shape[0], 999999, replace=False
@@ -482,7 +458,7 @@ def main(args):
                     print_num = np.mean(mean_metrics[m_name])
                     print_str = print_str + f"{m_name}: {print_num:.3f} | "
                 print_str = print_str + "\n"
-                # 整理各场景平均推理时间
+                # Summarize per-scene average inference time
                 time_lines = []
                 for sid, times in scene_infer_times.items():
                     if len(times) > 0:
