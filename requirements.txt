@@ -12,4 +12,6 @@ scipy
 opencv-python
 scikit-image
 tqdm
-
+trimesh
+pycolmap==3.10.0
+pyceres
