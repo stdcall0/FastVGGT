@@ -18,6 +18,7 @@
 
 
 ## 📰 News
+- [Sep 10, 2025] Added COLMAP outputs.
 - [Sep 8, 2025] Added custom dataset evaluation.
 - [Sep 3, 2025] Paper release.
 - [Sep 2, 2025] Code release.
@@ -116,6 +117,14 @@ python eval/eval_custom.py \
   --output_path ./eval_results_custom \
   --plot
 ```
+
+If you want the results in COLMAP’s format:
+```bash
+python eval/eval_custom_colmap.py \
+  --data_path /path/to/your_dataset \
+  --output_path ./eval_results_custom_colmap \
+```
+
 
 ### ScanNet
 Evaluate FastVGGT on the ScanNet dataset with 1,000 input images. The **--merging** parameter specifies the block index at which the merging strategy is applied:
