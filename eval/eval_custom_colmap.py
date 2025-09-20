@@ -28,7 +28,7 @@ from vggt.utils.load_fn import load_and_preprocess_images_downscale
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
-from vggt.utils.eval_utils import get_sorted_image_paths, load_images_rgb, get_vgg_input_imgs
+from vggt.utils.eval_utils import load_images_rgb, get_vgg_input_imgs
 
 
 def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
@@ -329,7 +329,7 @@ def main():
     # Colors (resize to 518 to match depth/points map grid)
     points_rgb = F.interpolate(
         vgg_input,
-        size=(vggt_fixed_resolution_width, vggt_fixed_resolution_height),
+        size=(vggt_fixed_resolution_height, vggt_fixed_resolution_width),
         mode="bilinear",
         align_corners=False,
     )
