@@ -21,12 +21,14 @@ if ROOT_DIR not in sys.path:
 
 import pycolmap
 import trimesh
+import time
 
 from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images_square
+from vggt.utils.load_fn import load_and_preprocess_images_downscale
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
+from vggt.utils.eval_utils import load_images_rgb, get_vgg_input_imgs
 
 
 def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
@@ -163,34 +165,52 @@ def rename_colmap_recons_and_rescale_camera(
     return reconstruction
 
 
-def run_vggt(model, images, dtype, resolution=518):
+def run_vggt(model, vgg_input, dtype, image_paths=None):
     """
     Run VGGT to predict extrinsics, intrinsics, depth map and depth confidence.
     images: tensor [N, 3, H, W] in [0,1]
     """
-    assert len(images.shape) == 4 and images.shape[1] == 3
+    assert len(vgg_input.shape) == 4 and vgg_input.shape[1] == 3
 
-    images = F.interpolate(
-        images, size=(resolution, resolution), mode="bilinear", align_corners=False
+    depth_conf_thresh = 3.0
+
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    start = time.time()
+    with torch.no_grad():        
+        with torch.amp.autocast('cuda', dtype=dtype):
+            vgg_input_cuda = vgg_input.cuda().to(torch.bfloat16)
+
+            predictions = model(vgg_input_cuda, image_paths=image_paths)
+
+    torch.cuda.synchronize()
+    end = time.time()
+    inference_time_ms = (end - start) * 1000.0
+
+    print(f"VGGT inference time: {inference_time_ms:.1f} ms for {vgg_input.shape[0]} images")
+    # Measure max GPU VRAM usage
+    if torch.cuda.is_available():
+        max_mem_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        print(f"Max GPU VRAM used: {max_mem_mb:.2f} MB")
+
+    extrinsic, intrinsic = pose_encoding_to_extri_intri(
+        predictions["pose_enc"], (vgg_input.shape[2], vgg_input.shape[3])
     )
 
-    with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=dtype):
-            images_b = images[None]
-            aggregated_tokens_list, ps_idx = model.aggregator(images_b)
-            pose_enc = model.camera_head(aggregated_tokens_list)[-1]
-            extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                pose_enc, images_b.shape[-2:]
-            )
-            depth_map, depth_conf = model.depth_head(
-                aggregated_tokens_list, images_b, ps_idx
-            )
+    # conversion stuff
+    depth_tensor = predictions["depth"]
+    depth_np = depth_tensor[0].detach().float().cpu().numpy()
+    depth_conf = predictions["depth_conf"]
+    depth_conf_np = depth_conf[0].detach().float().cpu().numpy()
+    depth_mask = depth_conf_np >= depth_conf_thresh
+    depth_filtered = depth_tensor[0].detach().float().cpu().numpy()
+    depth_filtered[~depth_mask] = np.nan
+    depth_np = depth_filtered
 
-    extrinsic = extrinsic.squeeze(0).cpu().numpy()
-    intrinsic = intrinsic.squeeze(0).cpu().numpy()
-    depth_map = depth_map.squeeze(0).cpu().numpy()
-    depth_conf = depth_conf.squeeze(0).cpu().numpy()
-    return extrinsic, intrinsic, depth_map, depth_conf
+    extrinsic_np = extrinsic[0].detach().float().cpu().numpy()
+    intrinsic_np = intrinsic[0].detach().float().cpu().numpy()
+
+    return extrinsic_np, intrinsic_np, depth_np, depth_conf_np
 
 
 def parse_args():
@@ -234,6 +254,11 @@ def parse_args():
         default=1024,
         help="Image loading resolution (VGGT runs at 518 internally)",
     )
+    parser.add_argument(
+        "--save_images",
+        action="store_true",
+        help="Save the output images",
+    )
     return parser.parse_args()
 
 
@@ -267,31 +292,35 @@ def main():
     model = VGGT(merging=args.merging, vis_attn_map=False)
     ckpt = torch.load(args.ckpt_path, map_location="cpu")
     model.load_state_dict(ckpt, strict=False)
-    model = model.to(device).eval()
+    model = model.cuda().eval()
+    model = model.to(torch.bfloat16)
     print("✅ Model loaded")
 
     # Load and preprocess images (square pad+resize to img_load_resolution)
-    vggt_fixed_resolution = 518
-    images, original_coords = load_and_preprocess_images_square(
-        image_path_list, args.img_load_resolution
-    )
-    images = images.to(device)
-    original_coords = original_coords.to(device)
-    print(f"🔄 Loaded {len(images)} images")
+    vggt_fixed_resolution_width = 518
+    vggt_fixed_resolution_height = 294
 
-    # Inference
-    print("🚀 Running VGGT inference...")
-    # Set attention patch dimensions to match 518x518 input (37x37 patches)
-    try:
-        patch_w = vggt_fixed_resolution // 14
-        patch_h = vggt_fixed_resolution // 14
-        if hasattr(model, "update_patch_dimensions"):
-            model.update_patch_dimensions(patch_w, patch_h)
-    except Exception as e:
-        print(f"⚠️  Failed to update patch dimensions: {e}")
+    images, original_coords = load_and_preprocess_images_downscale(
+        image_path_list, new_width=vggt_fixed_resolution_width, new_height=vggt_fixed_resolution_height
+    )
+    original_coords = original_coords.to(device)
+     # Load images
+    print(f"🔄 Loading images...")
+    images = load_images_rgb(image_path_list)
+
+    if not images or len(images) < 3:
+        print(f"❌ Error: Not enough valid images (need at least 3)")
+        return
+    print(f"✅ Loaded {len(images)} images")
+    images_array = np.stack(images)
+    vgg_input, patch_width, patch_height = get_vgg_input_imgs(images_array)
+    print(f"📐 Image patch dimensions: {patch_width}x{patch_height}")
+
+    # Update attention layer patch dimensions in the model
+    model.update_patch_dimensions(patch_width, patch_height)
 
     extrinsic, intrinsic, depth_map, depth_conf = run_vggt(
-        model, images, dtype, vggt_fixed_resolution
+        model, vgg_input, dtype, base_image_path_list
     )
 
     # Back-project depth to 3D (camera/world coords as defined by util func)
@@ -299,8 +328,8 @@ def main():
 
     # Colors (resize to 518 to match depth/points map grid)
     points_rgb = F.interpolate(
-        images,
-        size=(vggt_fixed_resolution, vggt_fixed_resolution),
+        vgg_input,
+        size=(vggt_fixed_resolution_height, vggt_fixed_resolution_width),
         mode="bilinear",
         align_corners=False,
     )
@@ -321,7 +350,7 @@ def main():
 
     # Build pycolmap reconstruction
     print("🧩 Converting to COLMAP format...")
-    image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
+    image_size = np.array([vggt_fixed_resolution_width, vggt_fixed_resolution_height])
     camera_type = "PINHOLE"  # feedforward mode supports PINHOLE here
     reconstruction = batch_np_matrix_to_pycolmap_wo_track(
         points_3d,
@@ -338,7 +367,7 @@ def main():
         reconstruction,
         base_image_path_list,
         original_coords.detach().cpu().numpy(),
-        img_size=vggt_fixed_resolution,
+        img_size=vggt_fixed_resolution_width,
         shift_point2d_to_original_res=True,
         shared_camera=False,
     )
@@ -350,24 +379,25 @@ def main():
     reconstruction.write(str(sparse_dir))
 
     # Also prepare images directory next to sparse for direct COLMAP import (copy only)
-    try:
-        images_out_dir = args.output_path / "images"
-        images_out_dir.mkdir(parents=True, exist_ok=True)
-        import shutil
+    if args.save_images:
+        try:
+            images_out_dir = args.output_path / "images"
+            images_out_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
 
-        num_copied = 0
-        for src_path in image_path_list:
-            dst_path = images_out_dir / os.path.basename(src_path)
-            if dst_path.exists():
-                continue
-            try:
-                shutil.copy2(src_path, dst_path)
-                num_copied += 1
-            except Exception as e:
-                print(f"⚠️  Failed to copy image {src_path}: {e}")
-        print(f"💾 Copied {num_copied} images to {images_out_dir}")
-    except Exception as e:
-        print(f"⚠️  Failed to prepare images directory: {e}")
+            num_copied = 0
+            for src_path in image_path_list:
+                dst_path = images_out_dir / os.path.basename(src_path)
+                if dst_path.exists():
+                    continue
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    num_copied += 1
+                except Exception as e:
+                    print(f"⚠️  Failed to copy image {src_path}: {e}")
+            print(f"💾 Copied {num_copied} images to {images_out_dir}")
+        except Exception as e:
+            print(f"⚠️  Failed to prepare images directory: {e}")
 
     # Quick point cloud PLY for visualization
     try:
