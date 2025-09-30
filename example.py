@@ -45,8 +45,9 @@ if __name__ == '__main__':
     
     # get all image paths under args.data_path
     image_names = [f for f in os.listdir(args.data_path) if f.endswith(('.png', '.jpg', '.jpeg'))]
+    image_paths = [os.path.join(args.data_path, name) for name in image_names]
     device = torch.device("cuda")
-    imgs = load_and_preprocess_images(image_names).to(device)
+    imgs = load_and_preprocess_images(image_paths).to(device)
 
     # 3. Inference
     print("Running model inference...")
