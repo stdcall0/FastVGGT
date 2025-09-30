@@ -110,7 +110,8 @@ if __name__ == '__main__':
     print("Building GLB scene...")
     glbscene = predictions_to_glb(
         predictions,
-        conf_thres=args.conf
+        conf_thres=args.conf,
+        show_cam=False
     )
 
     print(f"Saving GLB to: {args.save_path}")
