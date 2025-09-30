@@ -96,7 +96,7 @@ if __name__ == '__main__':
     # Convert tensors to numpy
     for key in predictions.keys():
         if isinstance(predictions[key], torch.Tensor):
-            predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension
+            predictions[key] = predictions[key].float().cpu().numpy().squeeze(0)  # remove batch dimension
     predictions['pose_enc_list'] = None # remove pose_enc_list
 
     # Generate world points from depth map
