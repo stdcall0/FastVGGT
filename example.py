@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import torch
 import time
 import os
@@ -8,6 +9,16 @@ from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from visual_utils import predictions_to_glb
+
+from vggt.utils.eval_utils import (
+    load_poses,
+    get_vgg_input_imgs,
+    get_sorted_image_paths,
+    build_frame_selection,
+    load_images_rgb,
+    infer_vggt_and_reconstruct,
+    evaluate_scene_and_save,
+)
 
 if __name__ == '__main__':
     # --- Argument Parsing ---
@@ -36,7 +47,7 @@ if __name__ == '__main__':
     model.load_state_dict(ckpt, strict=False)
     
     model = model.cuda().eval()
-    model = model.to(dtype)
+    model = model.to(torch.bfloat16)
     
     del ckpt
 
@@ -46,30 +57,39 @@ if __name__ == '__main__':
     # get all image paths under args.data_path
     image_names = [f for f in os.listdir(args.data_path) if f.endswith(('.png', '.jpg', '.jpeg'))]
     image_paths = [os.path.join(args.data_path, name) for name in image_names]
-    device = torch.device("cuda")
-    imgs = load_and_preprocess_images(image_paths).to(device)
+
+    
+    images = load_images_rgb(image_paths)
+    images_array = np.stack(images)
+    vgg_input, patch_width, patch_height = get_vgg_input_imgs(images_array)
+    # imgs = load_and_preprocess_images(image_paths).to(device)
+    model.update_patch_dimensions(patch_width, patch_height)
+    print(f"📐 Image patch dimensions: {patch_width}x{patch_height}")
 
     # 3. Inference
     print("Running model inference...")
     
+    device = torch.device("cuda")
     with torch.no_grad():
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize()
+        start_time = time.time()
+        
         with torch.amp.autocast('cuda', dtype=dtype):
-            torch.cuda.reset_peak_memory_stats(device)
-            torch.cuda.synchronize()
-            start_time = time.time()
-
-            predictions = model(imgs)
-
-            torch.cuda.synchronize()
-            end_time = time.time()
-            peak_vram_gb = torch.cuda.max_memory_allocated(device) / (1024**3)
+            vgg_input_cuda = vgg_input.cuda().to(torch.bfloat16)
+            predictions = model(vgg_input_cuda, image_paths=image_paths)
+            
+        torch.cuda.synchronize()
+        end_time = time.time()
+        peak_vram_gb = torch.cuda.max_memory_allocated(device) / (1024**3)
 
     print(f"Model inference finished.")
     print(f"Elapsed time: {end_time - start_time:.4f} seconds")
     print(f"Peak GPU VRAM usage: {peak_vram_gb:.4f} GB")
 
     print("Converting pose encoding to extrinsic and intrinsic matrices...")
-    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], imgs.shape[-2:])
+    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"],
+                                                        (vgg_input.shape[2], vgg_input.shape[3]))
     predictions["extrinsic"] = extrinsic
     predictions["intrinsic"] = intrinsic
     
